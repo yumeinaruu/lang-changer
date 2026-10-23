@@ -59,6 +59,11 @@ pub fn with_saved<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
+/// Editors such as VS Code copy the whole line (newline included) when nothing is selected.
+pub fn looks_like_selection(text: &str) -> bool {
+    !text.is_empty() && !text.ends_with('\n')
+}
+
 /// Copies the current selection with Cmd-C and returns it; `None` when nothing is selected.
 pub fn copy_selection() -> Option<String> {
     let pb = NSPasteboard::generalPasteboard();
@@ -125,6 +130,15 @@ mod tests {
 
         assert_eq!(read_two_flavors(), (Some("original".to_string()), Some(vec![1, 2, 3])));
         restore(user_clipboard);
+    }
+
+    #[test]
+    fn whole_line_copies_are_not_selections() {
+        assert!(looks_like_selection("ghbdtn"));
+        assert!(looks_like_selection("two words"));
+        // editors such as VS Code copy the whole line, newline included, when nothing is selected
+        assert!(!looks_like_selection("some line\n"));
+        assert!(!looks_like_selection(""));
     }
 
     #[test]

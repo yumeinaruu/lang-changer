@@ -2,6 +2,7 @@ use crate::clipboard;
 use crate::config::Hotkey;
 use crate::engine::{Engine, KeyInput};
 use crate::inject;
+use crate::injector::Injector;
 use crate::input_source;
 use crate::keys::{classify, Mods};
 use crate::layout_map::{convert, detect_direction};
@@ -15,6 +16,8 @@ use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
     CGEventType, CallbackResult, EventField,
 };
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSWorkspace};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,7 +53,7 @@ fn run_on_main(f: impl FnOnce() + Send + 'static) {
 fn convert_selection() {
     std::thread::spawn(|| {
         let direction = clipboard::with_saved(|| {
-            let text = clipboard::copy_selection()?;
+            let text = clipboard::copy_selection().filter(|t| clipboard::looks_like_selection(t))?;
             let direction = detect_direction(&text);
             clipboard::paste(&convert(&text, direction));
             Some(direction)
@@ -94,12 +97,18 @@ fn event_text(event: &CGEvent) -> String {
 struct State {
     engine: Arc<Mutex<Engine>>,
     hotkey: Hotkey,
-    last_pid: i64,
+    injector: Injector,
+    last_pid: i32,
+}
+
+fn frontmost_pid() -> i32 {
+    NSWorkspace::sharedWorkspace().frontmostApplication().map_or(0, |app| app.processIdentifier())
 }
 
 /// Installs the tap and blocks on the run loop.
 pub fn run(engine: Arc<Mutex<Engine>>, hotkey: Hotkey) -> Result<(), String> {
-    let state = Mutex::new(State { engine, hotkey, last_pid: 0 });
+    let injector = Injector::new(REPLACE_DELAY, inject::replace);
+    let state = Mutex::new(State { engine, hotkey, injector, last_pid: 0 });
     let port = Arc::new(AtomicUsize::new(0));
     let port_in_callback = port.clone();
 
@@ -122,7 +131,9 @@ pub fn run(engine: Arc<Mutex<Engine>>, hotkey: Hotkey) -> Result<(), String> {
     // SAFETY: kCFRunLoopCommonModes is a valid static CFString.
     CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
     tap.enable();
-    CFRunLoop::run_current();
+    // AppKit's run loop also services the tap source and is what delivers menu bar clicks.
+    let mtm = MainThreadMarker::new().ok_or("the event tap must run on the main thread")?;
+    NSApplication::sharedApplication(mtm).run();
     Ok(())
 }
 
@@ -141,7 +152,7 @@ fn handle(state: &Mutex<State>, port: &AtomicUsize, event_type: CGEventType, eve
             if inject::is_own_event(event) {
                 return CallbackResult::Keep;
             }
-            let pid = event.get_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID);
+            let pid = frontmost_pid();
             if pid != st.last_pid {
                 st.last_pid = pid;
                 st.engine.lock().unwrap().on_key(KeyInput::Reset);
@@ -164,10 +175,7 @@ fn handle(state: &Mutex<State>, port: &AtomicUsize, event_type: CGEventType, eve
     if let Some(replace) = out.replace {
         // TIS must be called on the main thread, which this callback runs on.
         input_source::switch_to(replace.switch_to);
-        std::thread::spawn(move || {
-            std::thread::sleep(REPLACE_DELAY);
-            inject::replace(replace.backspaces, &replace.text);
-        });
+        st.injector.submit(replace.backspaces, replace.text);
     }
     if input == KeyInput::Hotkey && nothing_to_convert {
         convert_selection();

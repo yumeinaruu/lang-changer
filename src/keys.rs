@@ -11,6 +11,11 @@ pub struct Mods {
 
 const KEYCODE_BACKSPACE: u16 = 51;
 
+/// Arrows, Home/End, Page Up/Down, forward delete and function keys: they never type text.
+fn is_non_text_keycode(keycode: u16) -> bool {
+    matches!(keycode, 64 | 79 | 80 | 90 | 96..=101 | 103 | 105..=107 | 109 | 111 | 113 | 115..=126)
+}
+
 /// ANSI virtual keycodes; they do not change with the active input source.
 pub fn keycode_for(name: &str) -> Option<u16> {
     let code = match name {
@@ -38,9 +43,13 @@ pub fn classify(keycode: u16, mods: Mods, text: &str, hotkey: &Hotkey) -> KeyInp
     if keycode == KEYCODE_BACKSPACE {
         return KeyInput::Backspace;
     }
+    if is_non_text_keycode(keycode) {
+        return KeyInput::Reset;
+    }
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
-        (Some(c), None) if !c.is_control() => KeyInput::Char(c),
+        // U+E000..U+F8FF is where Cocoa reports arrows, Home, End and friends.
+        (Some(c), None) if !c.is_control() && !('\u{e000}'..='\u{f8ff}').contains(&c) => KeyInput::Char(c),
         _ => KeyInput::Reset, // Return, Tab, Escape, arrows, function keys
     }
 }
@@ -100,5 +109,14 @@ mod tests {
         assert_eq!(keycode_for("f"), Some(3));
         assert_eq!(keycode_for("space"), Some(49));
         assert_eq!(keycode_for("nonsense"), None);
+    }
+
+    #[test]
+    fn navigation_keys_reset_even_if_they_report_private_use_characters() {
+        assert_eq!(classify(0, NONE, "\u{f700}", &ctrl_f()), KeyInput::Reset); // up arrow as Cocoa reports it
+        assert_eq!(classify(117, NONE, "\u{f728}", &ctrl_f()), KeyInput::Reset); // forward delete
+        for keycode in [115, 116, 119, 121, 122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111] {
+            assert_eq!(classify(keycode, NONE, "x", &ctrl_f()), KeyInput::Reset, "keycode {keycode}");
+        }
     }
 }

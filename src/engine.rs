@@ -50,12 +50,27 @@ pub struct Engine {
     enabled: bool,
     last_fix: Option<Fix>,
     last_kept: Option<Kept>,
+    /// The character that ended the previous token, `None` at the start or after a reset.
+    last_boundary: Option<char>,
+    /// `last_boundary` as it was when the current word started.
+    word_prefix: Option<char>,
+    /// The whitespace-delimited token being typed contains digits or code punctuation.
+    tok_technical: bool,
+    /// The previous whitespace-delimited token did.
+    prev_technical: bool,
 }
 
 /// Keys that are Cyrillic letters on the Russian layout but punctuation on the US one.
 const LETTER_PUNCT: &str = "[];',./`";
 /// Punctuation that may trail a word without being part of it.
 const TRAILING_PUNCT: &[char] = &[',', '.', ';', '\''];
+/// Punctuation after which a word may still be auto-fixed.
+const FIX_BOUNDARIES: &str = "!?)\"»”.,;";
+
+/// Digits and code punctuation: a token containing them is an identifier, path or number, not prose.
+fn is_technical(c: char) -> bool {
+    c.is_ascii_digit() || ":_-/\\@#<>=$%&*+|~^".contains(c)
+}
 
 impl Engine {
     pub fn new(detector: Detector, leave_alone: LeaveAlone) -> Engine {
@@ -66,6 +81,10 @@ impl Engine {
             enabled: true,
             last_fix: None,
             last_kept: None,
+            last_boundary: None,
+            word_prefix: None,
+            tok_technical: false,
+            prev_technical: false,
         }
     }
 
@@ -89,6 +108,9 @@ impl Engine {
                 self.buffer.reset();
                 self.last_fix = None;
                 self.last_kept = None;
+                self.last_boundary = None;
+                self.tok_technical = false;
+                self.prev_technical = false;
                 Output::default()
             }
         }
@@ -99,44 +121,62 @@ impl Engine {
         let ascii_word = self.buffer.as_str().starts_with(|f: char| f.is_ascii_alphabetic());
         if c.is_alphabetic() || (LETTER_PUNCT.contains(c) && ascii_word) {
             self.last_kept = None;
+            if self.buffer.is_empty() {
+                self.word_prefix = self.last_boundary;
+            }
             self.buffer.push(c);
             return Output::default();
         }
-        // `c` ends the word.
+        // `c` ends the word (or is a stray character).
+        if is_technical(c) {
+            self.tok_technical = true;
+        }
         let word = self.buffer.take();
         self.last_kept = None;
-        if word.is_empty() {
-            return Output::default();
-        }
-        if self.enabled {
-            if let Some(out) = self.try_fix(&word, c) {
-                return out;
+        let mut out = Output::default();
+        if !word.is_empty() {
+            let fixed = if self.enabled && !self.blocked(c) { self.try_fix(&word, c) } else { None };
+            match fixed {
+                Some(fix) => out = fix,
+                None => self.last_kept = Some(Kept { word, boundary: c }),
             }
         }
-        self.last_kept = Some(Kept { word, boundary: c });
-        Output::default()
+        if c.is_whitespace() {
+            self.prev_technical = self.tok_technical;
+            self.tok_technical = false;
+        }
+        self.last_boundary = Some(c);
+        out
+    }
+
+    /// Identifiers, paths, numbers and URLs are never fixed, nor words ended by code punctuation.
+    fn blocked(&self, boundary: char) -> bool {
+        let starts_token = self.word_prefix.is_none_or(char::is_whitespace);
+        self.tok_technical
+            || (starts_token && self.prev_technical)
+            || !(boundary.is_whitespace() || FIX_BOUNDARIES.contains(boundary))
     }
 
     fn try_fix(&mut self, word: &str, boundary: char) -> Option<Output> {
+        // Trailing . , ; ' are ambiguous (ю б ж э on the Russian layout). Judge the word without
+        // them, so "it." is never read as the Russian "шею".
         let core = word.trim_end_matches(TRAILING_PUNCT);
-        let candidates = if core.len() < word.len() && !core.is_empty() { vec![core, word] } else { vec![word] };
-        for candidate in candidates {
-            if let Decision::Convert(dir) = self.detector.decide(candidate, self.leave_alone.set()) {
-                let trailing = &word[candidate.len()..];
-                let text = format!("{}{}{}", convert(candidate, dir), trailing, boundary);
-                self.last_fix = Some(Fix {
-                    core: candidate.to_string(),
-                    original: word.to_string(),
-                    boundary: Some(boundary),
-                    dir,
-                });
-                return Some(Output {
-                    swallow: false,
-                    replace: Some(Replace { backspaces: word.chars().count() + 1, text, switch_to: dir }),
-                });
-            }
-        }
-        None
+        let candidate = if core.is_empty() { word } else { core };
+        let Decision::Convert(dir) = self.detector.decide(candidate, self.leave_alone.set()) else {
+            return None;
+        };
+        let trailing = &word[candidate.len()..];
+        let text = format!("{}{}{}", convert(candidate, dir), trailing, boundary);
+        self.last_fix = Some(Fix {
+            core: candidate.to_string(),
+            original: word.to_string(),
+            boundary: Some(boundary),
+            dir,
+        });
+        Some(Output {
+            swallow: false,
+            replace: Some(Replace { backspaces: word.chars().count() + 1, text, switch_to: dir }),
+        })
     }
 
     fn on_hotkey(&mut self) -> Output {
@@ -322,5 +362,47 @@ mod tests {
         let mut e = engine();
         assert_eq!(type_str(&mut e, "getUserName "), Output::default());
         assert_eq!(type_str(&mut e, "foo_bar "), Output::default());
+    }
+
+    #[test]
+    fn english_words_before_sentence_punctuation_are_never_fixed() {
+        let mut e = engine();
+        for w in include_str!("../data/en_words.txt").lines() {
+            for p in [",", ".", ";", "'"] {
+                assert_eq!(type_str(&mut e, &format!("{w}{p} ")), Output::default(), "{w}{p}");
+            }
+        }
+    }
+
+    #[test]
+    fn identifier_and_url_fragments_are_never_fixed() {
+        for text in [
+            "https://x.y ",
+            "http://localhost:8080/a ",
+            "cfg_path ",
+            "ptr_t ",
+            "std::vec::Vec<u8> ",
+            "Vec::new() ",
+            "<xml> ",
+            "10 kb ",
+            "my-lb ",
+        ] {
+            let mut e = engine();
+            assert_eq!(type_str(&mut e, text), Output::default(), "{text}");
+        }
+    }
+
+    #[test]
+    fn fixing_resumes_after_a_technical_token_and_a_plain_word() {
+        let mut e = engine();
+        type_str(&mut e, "10 kb ");
+        type_str(&mut e, "ok ");
+        assert_eq!(type_str(&mut e, "ghbdtn "), fix(7, "привет ", Direction::EnToRu));
+    }
+
+    #[test]
+    fn fixes_a_word_in_parentheses_and_quotes() {
+        let mut e = engine();
+        assert_eq!(type_str(&mut e, "(ghbdtn)"), fix(7, "привет)", Direction::EnToRu));
     }
 }

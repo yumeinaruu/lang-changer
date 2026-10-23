@@ -14,6 +14,13 @@ const RU_WORDS: &str = include_str!("../data/ru_words.txt");
 const SHORT_WORD_RANK: usize = 3000;
 /// A typed form scoring below this (mean ln-prob per trigram) is implausible.
 const IMPLAUSIBLE_BELOW: f64 = -6.0;
+/// Technical tokens whose Cyrillic form happens to be a Russian word or score well on trigrams.
+const TECH_WORDS: &[&str] = &[
+    "cfg", "ctx", "dst", "ctl", "gcc", "vec", "ptr", "tls", "http", "https", "udp", "xml", "html", "jwt", "mysql",
+    "dbt", "kb", "lb", "mb", "gb", "tb", "sql", "css", "api", "cli", "cpu", "gpu", "url", "uri", "json", "yaml",
+    "toml", "git", "npm", "pip", "ssh", "tcp", "dns", "ssl", "src", "bin", "lib", "tmp", "env", "cmd", "dev",
+    "pkg", "jdk", "jvm", "ide", "sdk", "cmake", "make", "sudo", "grep", "curl", "wget", "chmod", "mkdir",
+];
 /// Add-k smoothing for trigram counts.
 const SMOOTHING: f64 = 0.1;
 
@@ -85,7 +92,12 @@ impl Detector {
 
     pub fn decide(&self, word: &str, leave_alone: &HashSet<String>) -> Decision {
         let lower = word.to_lowercase();
-        if word.chars().count() < 2 || leave_alone.contains(&lower) || is_protected(word) {
+        if word.chars().count() < 2
+            || leave_alone.contains(&lower)
+            || is_protected(word)
+            || TECH_WORDS.contains(&lower.as_str())
+            || !word.chars().any(|c| c.is_alphabetic())
+        {
             return Decision::Keep;
         }
         let dir = detect_direction(word);
@@ -106,6 +118,10 @@ impl Detector {
         }
         if target_lang.words.contains(converted.as_str()) {
             return Decision::Convert(dir);
+        }
+        // Trigram scoring only for longer English-layout words: short or Cyrillic rare words need a list hit.
+        if dir == Direction::RuToEn || word.chars().count() <= 4 {
+            return Decision::Keep;
         }
         let typed_score = typed_lang.score(&lower);
         let conv_score = target_lang.score(&converted);
@@ -220,6 +236,30 @@ mod tests {
     fn converts_longer_wrong_layout_words() {
         for w in ["ghjuhfvvf", "gjkmpjdfntkm", "yfcnhjqrf", "ghjtrn"] {
             assert_eq!(d().decide(w, &none()), Decision::Convert(Direction::EnToRu), "{w}");
+        }
+    }
+
+    #[test]
+    fn keeps_common_technical_tokens() {
+        for w in [
+            "cfg", "ctx", "dst", "ctl", "gcc", "vec", "ptr", "tls", "http", "https", "udp", "xml", "html", "jwt",
+            "mysql", "dbt", "kb", "lb",
+        ] {
+            assert_eq!(d().decide(w, &none()), Decision::Keep, "{w}");
+        }
+    }
+
+    #[test]
+    fn keeps_rare_russian_words_that_are_not_in_the_list() {
+        for w in ["шрифты", "фикшн", "хэндлер", "коммитить"] {
+            assert_eq!(d().decide(w, &none()), Decision::Keep, "{w}");
+        }
+    }
+
+    #[test]
+    fn keeps_punctuation_only_tokens() {
+        for w in ["...", ",,,", ";;;"] {
+            assert_eq!(d().decide(w, &none()), Decision::Keep, "{w}");
         }
     }
 }

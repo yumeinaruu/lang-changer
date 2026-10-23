@@ -5,6 +5,7 @@ pub mod config;
 pub mod detector;
 pub mod engine;
 pub mod inject;
+pub mod injector;
 pub mod input_source;
 pub mod keys;
 pub mod launch_agent;

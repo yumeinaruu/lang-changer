@@ -8,7 +8,7 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// LaunchAgent definition: start at login, restart only after a crash (so menu-bar Quit sticks).
+/// LaunchAgent definition: start at login, restart only after a crash (so menu-bar Quit sticks and a missing permission is not retried every 10 s).
 pub fn plist(exe: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -25,8 +25,8 @@ pub fn plist(exe: &str) -> String {
     <true/>
     <key>KeepAlive</key>
     <dict>
-        <key>SuccessfulExit</key>
-        <false/>
+        <key>Crashed</key>
+        <true/>
     </dict>
 </dict>
 </plist>
@@ -81,7 +81,8 @@ mod tests {
         assert!(p.contains("<key>Label</key>\n    <string>com.lang-changer</string>"));
         assert!(p.contains("<string>/usr/local/bin/lang-changer</string>"));
         assert!(p.contains("<key>RunAtLoad</key>\n    <true/>"));
-        assert!(p.contains("<key>SuccessfulExit</key>\n        <false/>"));
+        assert!(p.contains("<key>Crashed</key>\n        <true/>"));
+        assert!(!p.contains("SuccessfulExit"));
     }
 
     #[test]
