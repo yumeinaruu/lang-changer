@@ -1,72 +1,142 @@
 # lang-changer
 
-A small macOS background tool that fixes text typed in the wrong keyboard layout (RU ↔ EN), like PuntoSwitcher.
+Лёгкая утилита для macOS на Rust, которая исправляет текст, набранный не в той раскладке (RU ↔ EN). Работает как PuntoSwitcher: набрали `ghbdtn`, нажали пробел, получили `привет`.
 
-- Type `ghbdtn` and press space → it becomes `привет ` and the layout switches to Russian.
-- `Control+F` converts the selection, or the last word if nothing is selected.
-- `Control+F` (or Backspace) right after an auto-fix undoes it and remembers the word.
+```text
+ghbdtn␣   →   привет␣        (и раскладка переключилась на русскую)
+руддщ␣    →   hello␣         (и раскладка переключилась на английскую)
+```
 
-## Build and run
+> **Статус:** ранняя версия. Логика покрыта тестами (68 штук), но работа с клавиатурой, буфером обмена и меню проверена только компиляцией. Перед использованием пройдите [чек-лист](#проверка-вручную).
+
+## Что умеет
+
+| Возможность | Как работает |
+|---|---|
+| **Автозамена** | Слово исправляется само, когда вы ставите пробел или знак препинания (`! ? ) " . , ;`) |
+| **Хоткей `Control+F`** | Конвертирует выделенный текст, а если ничего не выделено, то последнее слово |
+| **Отмена** | `Control+F` или `Backspace` сразу после автозамены возвращает как было и запоминает слово |
+| **Меню `Ru⇄En`** | Переключатель автозамены и выход |
+| **Автозапуск** | Одна команда ставит утилиту в LaunchAgent |
+| **Лёгкость** | Бинарник около 2 МБ, словари вшиты внутрь, внешних файлов не нужно |
+
+Регистр сохраняется (`Ghbdtn` → `Привет`), знаки препинания на русских буквенных клавишах учитываются (`j,hfpjv` → `образом`), а после замены раскладка переключается на ту, в которую перевели.
+
+## Как это выглядит внутри
+
+```mermaid
+flowchart LR
+    K[Нажатие клавиши] --> T[CGEventTap]
+    T --> E[Engine: буфер слова]
+    E -->|слово закончилось| D{Детектор}
+    D -->|Keep| P[Ничего не делаем]
+    D -->|Convert| R[Backspace и ввод нового текста]
+    R --> L[Переключение раскладки]
+    H[Control+F] --> E
+    E -->|нет слова| C[Выделение через буфер обмена]
+```
+
+**Как детектор решает, что слово не в той раскладке:**
+
+1. Слово, которое уже есть в словаре своей раскладки (`hello`, `привет`), не трогаем.
+2. Если слово после конвертации есть в словаре другого языка (`ghbdtn` → `привет`), исправляем.
+3. Для незнакомых английских слов от 5 букв сравниваем правдоподобность по буквенным триграммам, и исправляем, только если английский вариант заметно хуже русского.
+
+**Что никогда не исправляется автоматически:**
+
+- слова короче 3 букв (кроме частых слов вроде `yt` → `не`);
+- всё, где есть цифры или кодовая пунктуация: `getUserName`, `foo_bar`, `v2.1`, `https://x.y`, `std::vec`, `10 kb`;
+- CamelCase, e-mail, пути, технические слова (`http`, `xml`, `cfg`, `gcc`…);
+- слова, для которых вы уже отменяли автозамену;
+- слова перед `Enter` и `Tab`: для них используйте хоткей.
+
+## Установка
+
+Нужны macOS и [Rust](https://rustup.rs).
 
 ```sh
+git clone git@github.com:yumeinaruu/lang-changer.git
+cd lang-changer
 cargo build --release
 ./target/release/lang-changer
 ```
 
-A `Ru⇄En` item appears in the menu bar with an "Auto-fix enabled" toggle and Quit.
+В строке меню появится `Ru⇄En`.
 
-### Permissions
+### Разрешения
 
-macOS asks for two permissions on first start. Grant both to the binary (or to the terminal that runs it) in
-System Settings → Privacy & Security, then start it again:
+macOS попросит два разрешения. Выдайте их в **System Settings → Privacy & Security** тому приложению, из которого запускаете утилиту (Terminal, iTerm…):
 
-- Accessibility
-- Input Monitoring
+- **Accessibility**
+- **Input Monitoring**
 
-In password fields macOS disables keyboard monitoring, so the tool stays silent there.
+После этого перезапустите утилиту. В полях ввода паролей macOS сама отключает перехват клавиш, там утилита молчит.
 
-### Start at login
+### Автозапуск при входе
 
 ```sh
-./target/release/lang-changer install-agent     # writes ~/Library/LaunchAgents/com.lang-changer.plist
-./target/release/lang-changer uninstall-agent
+./target/release/lang-changer install-agent     # создаёт ~/Library/LaunchAgents/com.lang-changer.plist
+./target/release/lang-changer uninstall-agent   # убирает
 ```
 
-The permissions must be granted to the binary path that the agent runs. Restarts only after a crash, so Quit sticks.
+Агент запускается без терминала, поэтому разрешения нужно выдать самому бинарнику `target/release/lang-changer` (кнопка «+» в обоих разделах). Утилита перезапускается только после аварийного завершения, поэтому Quit из меню работает.
 
-## Configuration
+## Настройка
 
-`~/.config/lang-changer/config.toml` (all keys optional):
+Файл `~/.config/lang-changer/config.toml` (все ключи необязательные):
 
 ```toml
-hotkey = "ctrl+f"   # modifiers ctrl/alt/cmd/shift + one key (letter, digit or "space")
-threshold = 1.0     # higher = more cautious auto-fix
-enabled = true      # auto-fix on at start
+hotkey = "ctrl+f"   # модификаторы ctrl/alt/cmd/shift и одна клавиша: буква, цифра или "space"
+threshold = 1.0     # чем больше, тем осторожнее автозамена
+enabled = true      # включена ли автозамена при запуске
 ```
 
-`Control+F` is swallowed while the tool runs, so it no longer moves the cursor forward in text fields.
-Words you undid are stored in `~/.config/lang-changer/leave_alone.txt` (one per line, delete a line to forget it).
+Слова, для которых вы отменили автозамену, лежат в `~/.config/lang-changer/leave_alone.txt` по одному в строке. Чтобы «простить» слово, удалите его строку.
 
-## What is never auto-fixed
+> **Важно:** пока утилита запущена, `Control+F` перехватывается и больше не двигает курсор вправо в текстовых полях. Если это мешает, поменяйте `hotkey` в конфиге.
 
-Words shorter than 3 characters (unless they are frequent words), words with digits, `_`, `-`, `/`, `@`, `:`,
-a `.` inside, CamelCase, and words the detector recognises as valid in the layout they were typed in.
-Enter and Tab never trigger an auto-fix; use the hotkey for the last word instead.
+## Проверка вручную
 
-## Manual test checklist
+Пройдите в Terminal, Safari, Notes и VS Code:
 
-Run in Terminal, Safari, Notes and VS Code:
+- [ ] `ghbdtn ` → `привет `, раскладка стала русской
+- [ ] `руддщ ` на английской раскладке → `hello `
+- [ ] `hello `, `да `, `getUserName `, `foo_bar `, `v2.1 ` остаются как есть
+- [ ] `ghbdtn! ` → `привет! `, а `ghbdtn, ` → `привет, `
+- [ ] `Backspace` сразу после автозамены возвращает `ghbdtn `, повторно слово не исправляется
+- [ ] Выделить `ghbdtn`, нажать `Control+F` → `привет`; прежнее содержимое буфера обмена на месте
+- [ ] Без выделения: `nginx` и `Control+F` конвертируют слово
+- [ ] Выключить автозамену в меню: сама не работает, хоткей работает
+- [ ] Поле пароля: ничего не происходит, падений нет
 
-- [ ] `ghbdtn ` → `привет `, layout is now Russian
-- [ ] `руддщ ` on the English layout → `hello `
-- [ ] `hello `, `да `, `getUserName `, `foo_bar `, `v2.1 ` stay as typed
-- [ ] `ghbdtn! ` → `привет! `; `ghbdtn, ` → `привет, `
-- [ ] Backspace right after an auto-fix restores `ghbdtn `; typing it again is left alone
-- [ ] Select `ghbdtn`, press `Control+F` → `привет`; the previous clipboard content is unchanged
-- [ ] With nothing selected, `nginx` then `Control+F` converts the word
-- [ ] Menu bar toggle off → no auto-fix, hotkey still works
-- [ ] Password field: nothing happens, no crash
+## Известные ограничения
 
-## Word lists
+- Слова, которые начинаются с `х ъ ж э б ю` и набраны на английской раскладке (`это`, `быть`, `хорошо`), автоматически не исправляются, потому что эти клавиши в начале слова считаются знаками препинания. Хоткей их конвертирует.
+- При очень быстром наборе клавиша, нажатая сразу после автозамены (в пределах около 8 мс), может вклиниться между стиранием и вводом нового текста.
+- Поддерживается только стандартная русская раскладка ЙЦУКЕН поверх US/ABC.
+- Переключатель автозамены в меню не запоминается между запусками (для этого есть `enabled` в конфиге).
 
-`data/` holds the frequency lists used by the detector; see `data/README.md` for their source and license.
+## Разработка
+
+```sh
+cargo test                            # 68 тестов
+cargo clippy --all-targets -- -D warnings
+```
+
+| Модуль | Назначение |
+|---|---|
+| `layout_map` | Таблица раскладок ЙЦУКЕН ↔ QWERTY |
+| `detector` | Решает «исправлять или нет» по словарям и триграммам |
+| `engine` | Состояние набора: буфер слова, автозамена, отмена, хоткей |
+| `keys` | Превращает нажатие клавиши в событие для `engine` |
+| `tap` | `CGEventTap`, разрешения macOS, связка всех частей |
+| `inject`, `injector` | Ввод текста синтетическими событиями, очередь замен |
+| `input_source` | Переключение раскладки через Text Input Sources |
+| `clipboard` | Выделенный текст через буфер обмена с полным восстановлением |
+| `config`, `cli`, `launch_agent`, `menubar` | Конфиг, команды, автозапуск, иконка в меню |
+
+Спека и план реализации лежат в [`docs/superpowers`](docs/superpowers).
+
+## Словари
+
+Детектор использует списки из 20 000 самых частых слов каждого языка. Они взяты из [hermitdave/FrequencyWords](https://github.com/hermitdave/FrequencyWords) (OpenSubtitles 2018), лицензия CC-BY-SA 4.0. Подробности в [`data/README.md`](data/README.md).
