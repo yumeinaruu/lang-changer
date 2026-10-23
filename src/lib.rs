@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod cli;
 pub mod clipboard;
 pub mod config;
 pub mod detector;
@@ -6,5 +7,7 @@ pub mod engine;
 pub mod inject;
 pub mod input_source;
 pub mod keys;
+pub mod launch_agent;
 pub mod layout_map;
+pub mod menubar;
 pub mod tap;
