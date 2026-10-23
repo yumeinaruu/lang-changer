@@ -1,0 +1,14 @@
+[package]
+name = "lang-changer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "lang_changer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lang-changer"
+path = "src/main.rs"
+
+[dependencies]
