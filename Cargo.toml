@@ -12,5 +12,7 @@ name = "lang-changer"
 path = "src/main.rs"
 
 [dependencies]
+core-foundation = "0.10.1"
+core-graphics = "0.25.0"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
