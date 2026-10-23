@@ -25,6 +25,10 @@ impl WordBuffer {
         std::mem::take(&mut self.chars)
     }
 
+    pub fn as_str(&self) -> &str {
+        &self.chars
+    }
+
     pub fn is_empty(&self) -> bool {
         self.chars.is_empty()
     }
@@ -60,6 +64,14 @@ mod tests {
         b.push('a');
         b.reset();
         assert!(b.is_empty());
+    }
+
+    #[test]
+    fn as_str_peeks_without_clearing() {
+        let mut b = WordBuffer::new();
+        b.push('g');
+        assert_eq!(b.as_str(), "g");
+        assert_eq!(b.take(), "g");
     }
 
     #[test]

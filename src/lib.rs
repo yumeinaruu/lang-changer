@@ -1,6 +1,9 @@
 pub mod buffer;
 pub mod config;
 pub mod detector;
+pub mod engine;
 pub mod inject;
 pub mod input_source;
+pub mod keys;
 pub mod layout_map;
+pub mod tap;
