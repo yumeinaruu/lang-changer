@@ -285,6 +285,12 @@ mod tests {
     }
 
     #[test]
+    fn hotkey_with_nothing_to_convert_is_swallowed_so_the_selection_path_can_run() {
+        let mut e = engine();
+        assert_eq!(e.on_key(Hotkey), Output { swallow: true, replace: None });
+    }
+
+    #[test]
     fn disabled_engine_does_not_auto_fix_but_hotkey_works() {
         let mut e = engine();
         e.set_enabled(false);

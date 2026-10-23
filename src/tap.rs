@@ -1,8 +1,10 @@
+use crate::clipboard;
 use crate::config::Hotkey;
 use crate::engine::{Engine, KeyInput};
 use crate::inject;
 use crate::input_source;
 use crate::keys::{classify, Mods};
+use crate::layout_map::{convert, detect_direction};
 use core_foundation::base::TCFType;
 use foreign_types::ForeignType;
 use core_foundation::boolean::CFBoolean;
@@ -25,6 +27,38 @@ const REPLACE_DELAY: Duration = Duration::from_millis(8);
 extern "C" {
     static kAXTrustedCheckOptionPrompt: CFStringRef;
     fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+}
+
+extern "C" {
+    static _dispatch_main_q: c_void;
+    fn dispatch_async_f(queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
+}
+
+/// Runs `f` on the main thread (the run loop services the main dispatch queue).
+fn run_on_main(f: impl FnOnce() + Send + 'static) {
+    extern "C" fn trampoline(context: *mut c_void) {
+        // SAFETY: `context` is the Box<Box<dyn FnOnce()>> leaked below, consumed exactly once.
+        let f = unsafe { Box::from_raw(context as *mut Box<dyn FnOnce() + Send>) };
+        f();
+    }
+    let boxed: Box<Box<dyn FnOnce() + Send>> = Box::new(Box::new(f));
+    // SAFETY: `_dispatch_main_q` is libdispatch's main queue; ownership of `boxed` moves to the trampoline.
+    unsafe { dispatch_async_f(&raw const _dispatch_main_q, Box::into_raw(boxed) as *mut c_void, trampoline) };
+}
+
+/// Hotkey with nothing buffered: convert the current selection through the pasteboard.
+fn convert_selection() {
+    std::thread::spawn(|| {
+        let direction = clipboard::with_saved(|| {
+            let text = clipboard::copy_selection()?;
+            let direction = detect_direction(&text);
+            clipboard::paste(&convert(&text, direction));
+            Some(direction)
+        });
+        if let Some(direction) = direction {
+            run_on_main(move || input_source::switch_to(direction));
+        }
+    });
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -126,6 +160,7 @@ fn handle(state: &Mutex<State>, port: &AtomicUsize, event_type: CGEventType, eve
     };
 
     let out = st.engine.lock().unwrap().on_key(input);
+    let nothing_to_convert = out.replace.is_none();
     if let Some(replace) = out.replace {
         // TIS must be called on the main thread, which this callback runs on.
         input_source::switch_to(replace.switch_to);
@@ -133,6 +168,9 @@ fn handle(state: &Mutex<State>, port: &AtomicUsize, event_type: CGEventType, eve
             std::thread::sleep(REPLACE_DELAY);
             inject::replace(replace.backspaces, &replace.text);
         });
+    }
+    if input == KeyInput::Hotkey && nothing_to_convert {
+        convert_selection();
     }
     if out.swallow { CallbackResult::Drop } else { CallbackResult::Keep }
 }

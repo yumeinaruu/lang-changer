@@ -1,4 +1,4 @@
-use core_graphics::event::{CGEvent, CGEventTapLocation, EventField};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, EventField};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 /// Stamped on every synthetic event so the event tap can ignore its own output.
@@ -13,7 +13,7 @@ pub fn is_own_event(event: &CGEvent) -> bool {
 
 /// Deletes `backspaces` characters before the cursor, then types `text`.
 pub fn replace(backspaces: usize, text: &str) {
-    let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+    let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
         return;
     };
     for _ in 0..backspaces {
@@ -23,6 +23,20 @@ pub fn replace(backspaces: usize, text: &str) {
     for chunk in chars.chunks(CHUNK_CHARS) {
         let s: String = chunk.iter().collect();
         post_key(&source, 0, Some(&s));
+    }
+}
+
+/// Presses Cmd plus `keycode` (Cmd-C, Cmd-V).
+pub fn command_key(keycode: u16) {
+    let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
+        return;
+    };
+    for down in [true, false] {
+        if let Ok(event) = CGEvent::new_keyboard_event(source.clone(), keycode, down) {
+            event.set_flags(CGEventFlags::CGEventFlagCommand);
+            event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, OWN_EVENT_MARKER);
+            event.post(CGEventTapLocation::HID);
+        }
     }
 }
 
